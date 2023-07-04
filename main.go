@@ -105,7 +105,7 @@ func DownloadFile(ctx context.Context,
 		return 0, nil
 	}
 
-	return Download(ctx, b, file, o, s, c)
+	return Download(ctx, b, file, o, s, c, nil)
 }
 
 func Download(ctx context.Context,
@@ -113,8 +113,14 @@ func Download(ctx context.Context,
 	      file io.WriteCloser,
 	      o *blob.DownloadFileOptions,
 	      slicePool ByteSlicePooler,
-	      cacheLimiter CacheLimiter) (int64, error) {
-	
+	      cacheLimiter CacheLimiter,
+	      operationChannel chan<- func ()) (int64, error) {
+
+	var err error
+	errorChannel := make(chan error)
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
 	if o.BlockSize == 0 {
 		o.BlockSize = DefaultDownloadBlockSize
 	}
@@ -136,27 +142,65 @@ func Download(ctx context.Context,
 	}
 	
 	numChunks := uint16(((count - 1) / o.BlockSize) + 1)
+	postError := func(err error) {
+		select {
+		case errorChannel <- err:
+		default:
+		}
+	}
 
 	cf := NewChunkedFileWriter(ctx, slicePool, cacheLimiter, file, uint32(numChunks), MaxRetryPerDownloadBody, false)
+	var wg sync.WaitGroup
 
 	// Prepare and do parallel download.
 	progress := int64(0)
 	progressLock := &sync.Mutex{}
-	
-	err := DoBatchTransfer(ctx, &BatchTransferOptions{
-		OperationName: "chunkedFileWriter",
-		TransferSize:  count,
-		ChunkSize:     o.BlockSize,
-		Concurrency:   o.Concurrency,
-		Operation: func(ctx context.Context, chunkStart int64, count int64) error {
+
+	go func() {
+		select {
+		case <-ctx.Done():
+			err = ctx.Err()
+			return
+		case err = <- errorChannel:
+			cancel()
+			return
+		}
+	}()
+
+	for chunkNum := uint16(0); chunkNum < numChunks; chunkNum++ {
+		wg.Add(1)
+
+		curChunkSize := o.BlockSize
+		if chunkNum == numChunks-1 { // Last chunk
+			curChunkSize = count - (int64(chunkNum) * o.BlockSize) // Remove size of all transferred chunks from total
+		}
+		
+		offset := int64(chunkNum) * o.BlockSize
+
+		operationChannel <- func() {
+			defer wg.Done()
+
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
+
 			downloadBlobOptions := getDownloadBlobOptions(o, blob.HTTPRange{
-				Offset: chunkStart + o.Range.Offset,
-				Count:  count,
+				Offset: offset + o.Range.Offset,
+				Count:  curChunkSize,
 			}, nil)
-			cf.WaitToScheduleChunk(ctx, count)
+
+			err = cf.WaitToScheduleChunk(ctx, curChunkSize)
+			if err != nil {
+				postError(err)
+				return
+			}
+
 			dr, err := b.DownloadStream(ctx, downloadBlobOptions)
 			if err != nil {
-				return err
+				postError(err)
+				return
 			}
 			var body io.ReadCloser = dr.NewRetryReader(ctx, &o.RetryReaderOptionsPerBlock)
 			if o.Progress != nil {
@@ -173,16 +217,15 @@ func Download(ctx context.Context,
 					})
 			}
 
-			// schedule chunk here
-			//_, err = io.Copy(shared.NewSectionWriter(writer, chunkStart, count), body)
-			cf.EnqueueChunk(ctx, chunkStart, count, body, true)
+			cf.EnqueueChunk(ctx, offset, curChunkSize, body, true)
 			if err != nil {
-				return err
+				postError(err)
+				return
 			}
-			err = body.Close()
-			return err
-		},
-	})
+			
+			body.Close()
+		}
+	}
 
 	if err != nil {
 		return 0, err
