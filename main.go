@@ -125,9 +125,9 @@ func downloadInternal(ctx context.Context,
 
 	// file serial writer
 	count := fileSize
-	numChunks := uint16(((count - 1) / blockSize) + 1)
+	numBlocks := uint16(((count - 1) / blockSize) + 1)
 	
-	blocks := make([]chan []byte, numChunks)
+	blocks := make([]chan []byte, numBlocks)
 	totalWrite := int64(0)
 	go func() {
 		for _, block := range blocks {
@@ -155,8 +155,8 @@ func downloadInternal(ctx context.Context,
 		}
 	}()
 
-	 // DownloadChunkFunc download each chunk into buffer provided
-	downloadRange := func(buff []byte, curChunkSize, offset int64) {
+	 // DownloadBlock func downloads each block of the blob into buffer provided
+	downloadBlock := func(buff []byte, blockNum uint16, currentBlockSize, offset int64) {
 		defer wg.Done()
 
 		select {
@@ -168,7 +168,7 @@ func downloadInternal(ctx context.Context,
 		n, err := b.DownloadBuffer(ctx, buff, &blob.DownloadBufferOptions{
 			Concurrency: 1,
 			BlockSize: blockSize,
-			Range: blob.HTTPRange{Offset: offset, Count: curChunkSize},
+			Range: blob.HTTPRange{Offset: offset, Count: currentBlockSize},
 		});
 
 		if err != nil {
@@ -176,31 +176,40 @@ func downloadInternal(ctx context.Context,
 			return
 		}
 
-		if int64(n) != curChunkSize {
+		if int64(n) != currentBlockSize {
 			postError(errors.New("invalid read"))
 			return
 		}
+
+		// Send to the filewriter
+		blocks[blockNum] <- buff
 	}
 
-	for chunkNum := uint16(0); chunkNum < numChunks; chunkNum++ {
+	for blockNum := uint16(0); blockNum < numBlocks; blockNum++ {
 		wg.Add(1)
 
-		curChunkSize := blockSize
-		if chunkNum == numChunks-1 { // Last chunk
-			 // Remove size of all transferred chunks from total
-			curChunkSize = count - (int64(chunkNum) * blockSize)
+		currBlockSize := blockSize
+		if blockNum == numBlocks-1 { // Last block
+			 // Remove size of all transferred blocks from total
+			currBlockSize = count - (int64(blockNum) * blockSize)
 		}
 		
-		offset := int64(chunkNum) * blockSize
+		offset := int64(blockNum) * blockSize
 
 		// allocate a buffer. This buffer will be released by the fileWriter
-		if err := cacheLimiter.WaitUntilAdd(ctx, curChunkSize, nil); err != nil {
+		if err := cacheLimiter.WaitUntilAdd(ctx, currBlockSize, nil); err != nil {
 			return 0, err
 		}
-		buff := slicePool.RentSlice(curChunkSize)
+		buff := slicePool.RentSlice(currBlockSize)
+
+		f := func(buff []byte, blockNum uint16 , curBlockSize, offset int64) func() {
+			return func() {
+				downloadBlock(buff, blockNum, curBlockSize, offset)
+			}
+		}(buff, blockNum, currBlockSize, offset)
 
 		// send
-		operationChannel <- func() { downloadRange(buff, curChunkSize, offset) }
+		operationChannel <- f
 	}
 
 	// Wait for all chunks to be done.
