@@ -135,18 +135,23 @@ func downloadInternal(ctx context.Context,
 			case <-ctx.Done():
 				return
 			case buff := <- block:
-				n, err := file.Write(buff)
+				n, err := file.Write(buff) 
 				if err != nil {
 					postError(err)
 					return
 				}
+				if n != len(buff) {
+					postError(io.ErrShortWrite)
+					return
+				}
+
 				slicePool.ReturnSlice(buff)
 				totalWrite += int64(n)
 			}
 		}
 
 		if totalWrite != count {
-			postError(errors.New("badWrite"))
+			postError(io.ErrShortWrite)
 		}
 	}()
 

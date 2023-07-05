@@ -84,6 +84,9 @@ func (c *cacheLimiter) TryAdd(count int64, useRelaxedLimit bool) (added bool) {
 
 /// WaitUntilAddBytes blocks until it completes a successful call to TryAddBytes
 func (c *cacheLimiter) WaitUntilAdd(ctx context.Context, count int64, useRelaxedLimit Predicate) error {
+	if useRelaxedLimit == nil {
+		useRelaxedLimit = func() bool {return true}
+	}
 	for {
 		// Proceed if there's room in the cache
 		if c.TryAdd(count, useRelaxedLimit()) {
