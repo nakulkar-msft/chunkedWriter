@@ -24,8 +24,10 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/blockblob"
+	"github.com/Azure/chunkedDownloader/core"
 )
 
 const (
@@ -38,6 +40,29 @@ const (
 	MaxRetryPerDownloadBody = 5
 )
 
+func logThroughput(ctx context.Context, p core.PacerAdmin) {
+	interval := 4 * time.Second
+	intervalStartTime := time.Now()
+	prevBytesTransferred := p.GetTotalTraffic()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(interval):
+			bytesOnWireMb := float64(float64(p.GetTotalTraffic()-prevBytesTransferred) / (1000 * 1000))
+			timeElapsed := time.Since(intervalStartTime).Seconds()
+			if timeElapsed != 0 {
+				throughput := bytesOnWireMb / float64(timeElapsed)
+				fmt.Printf("4-sec throughput: %v MBPS\n", throughput)
+			}
+			// reset the interval timer and byte count
+			intervalStartTime = time.Now()
+			prevBytesTransferred = p.GetTotalTraffic()
+		}
+	}
+}
+
 // ===============================================================================================//
 func main() {
 
@@ -48,15 +73,18 @@ func main() {
 	blobURL := os.Args[2]
 	outputFile := os.Args[3]
 
-	s := NewMultiSizeSlicePool(MaxBlockBlobBlockSize)
-	c := NewCacheLimiter(4 * 1024 * 1024 * 1024) // 4 GiB
-	o := make(chan func(), 64)
+	slicePool := core.NewMultiSizeSlicePool(MaxBlockBlobBlockSize)
+	cl := core.NewCacheLimiter(4 * 1024 * 1024 * 1024) // 4 GiB
+	operationChannel := make(chan func(), 64)
+	var pacer core.PacerAdmin = core.NewTokenBucketPacer(8 * 1024 * 1024, int64(0))
 
 	worker := func() {
-		for f := range o {
+		for f := range operationChannel {
 			f()
 		}
 	}
+
+	go logThroughput(ctx, pacer)
 
 	for i := 0; i < 64; i++ {
 		go worker()
@@ -70,10 +98,10 @@ func main() {
 
 	if action == "d" {
 		fmt.Println("Downloading")
-		_, err = DownloadFile(ctx, b, outputFile, 8*1024*1024, s, c, o, nil)
+		_, err = core.DownloadFile(ctx, b, outputFile, 8*1024*1024, slicePool, cl, operationChannel, pacer)
 	} else if action == "u" {
 		fmt.Println("Uploading")
-		err = UploadFile(ctx, b, outputFile, 8*1024*1024, s, c, o, nil)
+		err = core.UploadFile(ctx, b, outputFile, 8*1024*1024, slicePool, cl, operationChannel, pacer)
 	}
 
 	if err != nil {
