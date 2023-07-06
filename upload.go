@@ -29,7 +29,8 @@ func UploadFile(ctx context.Context,
 	blockSize int64,
 	s ByteSlicePooler,
 	c CacheLimiter,
-	o chan<- func()) error {
+	o chan<- func(), 
+	p pacer) error {
 
 	// 1. Calculate the size of the destination file
 	file, err := os.Open(filepath)
@@ -46,11 +47,11 @@ func UploadFile(ctx context.Context,
 	fileSize := stat.Size()
 
 	if fileSize <= blockSize { //perform a single thread copy here.
-		_, err := b.Upload(ctx, file, &blockblob.UploadOptions{})
+		_, err := b.Upload(ctx, newPacedReadSeekCloser(ctx, p, file), &blockblob.UploadOptions{})
 		return err
 	}
 
-	return uploadInternal(ctx, b, file, fileSize, blockSize, s, c, o)
+	return uploadInternal(ctx, b, file, fileSize, blockSize, s, c, o, p)
 }
 
 func uploadInternal(ctx context.Context,
@@ -60,7 +61,8 @@ func uploadInternal(ctx context.Context,
 	blockSize int64,
 	s ByteSlicePooler,
 	cachelimiter CacheLimiter,
-	operationChannel chan<- func()) error {
+	operationChannel chan<- func(),
+	p pacer) error {
 
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -81,7 +83,7 @@ func uploadInternal(ctx context.Context,
 
 	uploadBlock := func(buff []byte, blockIndex uint16) {
 		defer wg.Done()
-		body := withNopCloser(bytes.NewReader(buff))
+		body := newPacedReadSeekCloser(ctx, p, withNopCloser(bytes.NewReader(buff)))
 		blockName := base64.StdEncoding.EncodeToString([]byte(uuid.New().String()))
 		blockNames[blockIndex] = blockName
 

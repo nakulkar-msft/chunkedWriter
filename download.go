@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -17,7 +18,8 @@ func DownloadFile(ctx context.Context,
 	blockSize int64,
 	s ByteSlicePooler,
 	c CacheLimiter,
-	o chan<- func()) (int64, error) {
+	o chan<- func(),
+	p pacer) (int64, error) {
 
 	b := bb.BlobClient()
 
@@ -60,10 +62,10 @@ func DownloadFile(ctx context.Context,
 		var body io.ReadCloser = dr.NewRetryReader(ctx, nil)
 		defer body.Close()
 
-		return io.Copy(file, body)
+		return io.Copy(file, newPacedReader(ctx, p, body))
 	}
 
-	return downloadInternal(ctx, b, file, size, blockSize, s, c, o)
+	return downloadInternal(ctx, b, file, size, blockSize, s, c, o, p)
 }
 
 func downloadInternal(ctx context.Context,
@@ -73,7 +75,8 @@ func downloadInternal(ctx context.Context,
 	blockSize int64,
 	slicePool ByteSlicePooler,
 	cacheLimiter CacheLimiter,
-	operationChannel chan<- func()) (int64, error) {
+	operationChannel chan<- func(),
+	p pacer) (int64, error) {
 
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -130,10 +133,8 @@ func downloadInternal(ctx context.Context,
 	downloadBlock := func(buff []byte, blockNum uint16, currentBlockSize, offset int64) {
 		defer wg.Done()
 
-		n, err := b.DownloadBuffer(ctx, buff, &blob.DownloadBufferOptions{
-			Concurrency: 1,
-			BlockSize:   blockSize,
-			Range:       blob.HTTPRange{Offset: offset, Count: currentBlockSize},
+		dr, err := b.DownloadStream(ctx, &blob.DownloadStreamOptions{
+			Range: blob.HTTPRange{Offset: offset, Count: currentBlockSize},
 		})
 
 		if err != nil {
@@ -141,6 +142,14 @@ func downloadInternal(ctx context.Context,
 			return
 		}
 
+		var body io.ReadCloser = dr.NewRetryReader(ctx, nil)
+		defer body.Close()
+
+		n, err := io.Copy(bytes.NewBuffer(buff), newPacedReader(ctx, p, body))
+		if err != nil {
+			postError(err)
+			return
+		}
 		if int64(n) != currentBlockSize {
 			postError(errors.New("invalid read"))
 			return

@@ -70,10 +70,10 @@ func main() {
 
 	if action == "d" {
 		fmt.Println("Downloading")
-		_, err = DownloadFile(ctx, b, outputFile, 8*1024*1024, s, c, o)
+		_, err = DownloadFile(ctx, b, outputFile, 8*1024*1024, s, c, o, nil)
 	} else if action == "u" {
 		fmt.Println("Uploading")
-		err = UploadFile(ctx, b, outputFile, 8*1024*1024, s, c, o)
+		err = UploadFile(ctx, b, outputFile, 8*1024*1024, s, c, o, nil)
 	}
 
 	if err != nil {
