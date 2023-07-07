@@ -38,6 +38,10 @@ const (
 	MaxBlockBlobBlockSize = 4000 * 1024 * 1024
 
 	MaxRetryPerDownloadBody = 5
+
+	MiB = 1024 * 1024
+
+	GiB = 1024 * MiB
 )
 
 func logThroughput(ctx context.Context, p core.PacerAdmin) {
@@ -73,22 +77,9 @@ func main() {
 	blobURL := os.Args[2]
 	outputFile := os.Args[3]
 
-	slicePool := core.NewMultiSizeSlicePool(MaxBlockBlobBlockSize)
-	cl := core.NewCacheLimiter(4 * 1024 * 1024 * 1024) // 4 GiB
-	operationChannel := make(chan func(), 64)
-	var pacer core.PacerAdmin = core.NewTokenBucketPacer(8 * 1024 * 1024, int64(0))
-
-	worker := func() {
-		for f := range operationChannel {
-			f()
-		}
-	}
-
-	go logThroughput(ctx, pacer)
-
-	for i := 0; i < 64; i++ {
-		go worker()
-	}
+	throughput := 16 * MiB
+	concurrency := 32
+	c := core.NewCopier(nil, int64(throughput), MaxBlockBlobBlockSize, 4 * GiB, concurrency )
 
 	b, err := blockblob.NewClientWithNoCredential(blobURL, &blockblob.ClientOptions{})
 	if err != nil {
@@ -98,10 +89,10 @@ func main() {
 
 	if action == "d" {
 		fmt.Println("Downloading")
-		_, err = core.DownloadFile(ctx, b, outputFile, 8*1024*1024, slicePool, cl, operationChannel, pacer)
+		_, err = c.DownloadFile(ctx, b, outputFile, 8*1024*1024)
 	} else if action == "u" {
 		fmt.Println("Uploading")
-		err = core.UploadFile(ctx, b, outputFile, 8*1024*1024, slicePool, cl, operationChannel, pacer)
+		err = c.UploadFile(ctx, b, outputFile, 8*1024*1024)
 	}
 
 	if err != nil {

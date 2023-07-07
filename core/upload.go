@@ -42,14 +42,10 @@ func withNopCloser(r io.ReadSeeker) io.ReadSeekCloser {
 	return nopCloser{r}
 }
 
-func UploadFile(ctx context.Context,
-	b *blockblob.Client,
-	filepath string,
-	blockSize int64,
-	s ByteSlicePooler,
-	c CacheLimiter,
-	o chan<- func(), 
-	p pacer) error {
+func (c *copier) UploadFile(ctx context.Context,
+	                        b *blockblob.Client,
+                            filepath string,
+                            blockSize int64) error {
 
 	// 1. Calculate the size of the destination file
 	file, err := os.Open(filepath)
@@ -66,22 +62,19 @@ func UploadFile(ctx context.Context,
 	fileSize := stat.Size()
 
 	if fileSize <= blockSize { //perform a single thread copy here.
-		_, err := b.Upload(ctx, newPacedReadSeekCloser(ctx, p, file), &blockblob.UploadOptions{})
+		_, err := b.Upload(ctx, newPacedReadSeekCloser(ctx, c.pacer, file), &blockblob.UploadOptions{})
 		return err
 	}
 
-	return uploadInternal(ctx, b, file, fileSize, blockSize, s, c, o, p)
+	return c.uploadInternal(ctx, b, file, fileSize, blockSize)
 }
 
-func uploadInternal(ctx context.Context,
-	b *blockblob.Client,
-	file io.ReadSeekCloser,
-	fileSize int64,
-	blockSize int64,
-	s ByteSlicePooler,
-	cachelimiter CacheLimiter,
-	operationChannel chan<- func(),
-	p pacer) error {
+func (c *copier) uploadInternal(ctx context.Context,
+                                b *blockblob.Client,
+                                file io.ReadSeekCloser,
+                                fileSize int64,
+                                blockSize int64) error {
+
 
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -102,7 +95,7 @@ func uploadInternal(ctx context.Context,
 
 	uploadBlock := func(buff []byte, blockIndex uint16) {
 		defer wg.Done()
-		body := newPacedReadSeekCloser(ctx, p, withNopCloser(bytes.NewReader(buff)))
+		body := newPacedReadSeekCloser(ctx, c.pacer, withNopCloser(bytes.NewReader(buff)))
 		blockName := base64.StdEncoding.EncodeToString([]byte(uuid.New().String()))
 		blockNames[blockIndex] = blockName
 
@@ -128,11 +121,11 @@ func uploadInternal(ctx context.Context,
 			currBlockSize = fileSize - (int64(blockNum) * blockSize)
 		}
 
-		if err := cachelimiter.WaitUntilAdd(ctx, currBlockSize, nil); err != nil {
+		if err := c.cacheLimiter.WaitUntilAdd(ctx, currBlockSize, nil); err != nil {
 			postError(err)
 			break
 		}
-		buff := s.RentSlice(currBlockSize)
+		buff := c.slicePool.RentSlice(currBlockSize)
 
 		n, err := file.Read(buff)
 		if err != nil {
@@ -149,7 +142,7 @@ func uploadInternal(ctx context.Context,
 		}(buff, blockNum)
 
 		wg.Add(1)
-		operationChannel <- f
+		c.opChan <- f
 	}
 
 	// Wait for all chunks to be done.

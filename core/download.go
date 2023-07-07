@@ -32,14 +32,11 @@ import (
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/blockblob"
 )
 
-func DownloadFile(ctx context.Context,
+func (c *copier) DownloadFile(
+	ctx context.Context,
 	bb *blockblob.Client,
 	filepath string,
-	blockSize int64,
-	s ByteSlicePooler,
-	c CacheLimiter,
-	o chan<- func(),
-	p pacer) (int64, error) {
+	blockSize int64) (int64, error) {
 
 	b := bb.BlobClient()
 
@@ -82,21 +79,18 @@ func DownloadFile(ctx context.Context,
 		var body io.ReadCloser = dr.NewRetryReader(ctx, nil)
 		defer body.Close()
 
-		return io.Copy(file, newPacedReader(ctx, p, body))
+		return io.Copy(file, newPacedReader(ctx, c.pacer, body))
 	}
 
-	return downloadInternal(ctx, b, file, size, blockSize, s, c, o, p)
+	return c.downloadInternal(ctx, b, file, size, blockSize)
 }
 
-func downloadInternal(ctx context.Context,
+func (c *copier) downloadInternal(
+	ctx context.Context,
 	b *blob.Client,
 	file *os.File,
 	fileSize int64,
-	blockSize int64,
-	slicePool ByteSlicePooler,
-	cacheLimiter CacheLimiter,
-	operationChannel chan<- func(),
-	p pacer) (int64, error) {
+	blockSize int64) (int64, error) {
 
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -139,7 +133,7 @@ func downloadInternal(ctx context.Context,
 					return
 				}
 
-				slicePool.ReturnSlice(buff)
+				c.slicePool.ReturnSlice(buff)
 				totalWrite += int64(n)
 			}
 		}
@@ -165,7 +159,7 @@ func downloadInternal(ctx context.Context,
 		var body io.ReadCloser = dr.NewRetryReader(ctx, nil)
 		defer body.Close()
 
-		if err := p.RequestTrafficAllocation(ctx, int64(len(buff))); err != nil {
+		if err := c.pacer.RequestTrafficAllocation(ctx, int64(len(buff))); err != nil {
 			postError(err)
 			return
 		}
@@ -203,11 +197,11 @@ func downloadInternal(ctx context.Context,
 		offset := int64(blockNum) * blockSize
 
 		// allocate a buffer. This buffer will be released by the fileWriter
-		if err := cacheLimiter.WaitUntilAdd(ctx, currBlockSize, nil); err != nil {
+		if err := c.cacheLimiter.WaitUntilAdd(ctx, currBlockSize, nil); err != nil {
 			postError(err)
 			break
 		}
-		buff := slicePool.RentSlice(currBlockSize)
+		buff := c.slicePool.RentSlice(currBlockSize)
 
 		f := func(buff []byte, blockNum uint16, curBlockSize, offset int64) func() {
 			return func() {
@@ -217,7 +211,7 @@ func downloadInternal(ctx context.Context,
 
 		// send
 		wg.Add(1)
-		operationChannel <- f
+		c.opChan <- f
 	}
 
 	// Wait for all chunks to be done.
