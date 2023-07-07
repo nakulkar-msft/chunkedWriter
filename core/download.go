@@ -165,7 +165,12 @@ func downloadInternal(ctx context.Context,
 		var body io.ReadCloser = dr.NewRetryReader(ctx, nil)
 		defer body.Close()
 
-		n, err := io.Copy(bytes.NewBuffer(buff), newPacedReader(ctx, p, body))
+		if err := p.RequestTrafficAllocation(ctx, int64(len(buff))); err != nil {
+			postError(err)
+			return
+		}
+
+		n, err := io.Copy(bytes.NewBuffer(buff), body)
 		if err != nil {
 			postError(err)
 			return

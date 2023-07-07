@@ -27,48 +27,48 @@ import (
 
 type pacedReader struct {
 	pacer
-    r io.Reader
-    ctx context.Context
+	r   io.Reader
+	ctx context.Context
 }
 
 func (pr *pacedReader) Read(p []byte) (n int, err error) {
-    pr.RequestTrafficAllocation(pr.ctx, int64(len(p)))
-    return pr.r.Read(p)
+	//pr.RequestTrafficAllocation(pr.ctx, int64(len(p)))
+	return pr.r.Read(p)
 }
 
 func newPacedReader(ctx context.Context, p pacer, r io.Reader) io.Reader {
-    if p == nil {
-        return r
-    }
+	if p == nil {
+		return r
+	}
 
-    return &pacedReader{p, r, ctx}
+	return &pacedReader{p, r, ctx}
 }
 
 //=============================================================================
 
 type pacedReadSeekCloser struct {
-    pacer
-    r io.ReadSeekCloser
-    ctx context.Context
+	pacer
+	r   io.ReadSeekCloser
+	ctx context.Context
 }
 
 func (pr *pacedReadSeekCloser) Read(p []byte) (int, error) {
-    pr.RequestTrafficAllocation(pr.ctx, int64(len(p)))
-    return pr.r.Read(p)
+	pr.RequestTrafficAllocation(pr.ctx, int64(len(p)))
+	return pr.r.Read(p)
 }
 
 func (pr *pacedReadSeekCloser) Seek(offset int64, whence int) (int64, error) {
-    return pr.r.Seek(offset, whence)
+	return pr.r.Seek(offset, whence)
 }
 
 func (pr *pacedReadSeekCloser) Close() error {
-    return pr.r.Close()
+	return pr.r.Close()
 }
 
 func newPacedReadSeekCloser(ctx context.Context, p pacer, r io.ReadSeekCloser) io.ReadSeekCloser {
-    if p == nil {
-        return r
-    }
+	if p == nil {
+		return r
+	}
 
-    return &pacedReadSeekCloser{p, r, ctx}
+	return &pacedReadSeekCloser{p, r, ctx}
 }
