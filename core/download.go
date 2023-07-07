@@ -38,6 +38,10 @@ func (c *copier) DownloadFile(
 	filepath string,
 	blockSize int64) (int64, error) {
 
+    ctx, cancel := context.WithCancel(ctx)
+    defer cancel()
+    go c.monitorContext(ctx, cancel)
+
 	b := bb.BlobClient()
 
 	// 1. Calculate the size of the destination file
@@ -82,19 +86,16 @@ func (c *copier) DownloadFile(
 		return io.Copy(file, newPacedReader(ctx, c.pacer, body))
 	}
 
-	return c.downloadInternal(ctx, b, file, size, blockSize)
+	return c.downloadInternal(ctx, cancel, b, file, size, blockSize)
 }
 
 func (c *copier) downloadInternal(
 	ctx context.Context,
+    cancel context.CancelFunc,
 	b *blob.Client,
 	file *os.File,
 	fileSize int64,
 	blockSize int64) (int64, error) {
-
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
 	// short hand for routines to report and error
 	errorChannel := make(chan error)
 	postError := func(err error) {
@@ -211,7 +212,7 @@ func (c *copier) downloadInternal(
 
 		// send
 		wg.Add(1)
-		c.opChan <- f
+        c.execute(f)
 	}
 
 	// Wait for all chunks to be done.

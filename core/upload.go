@@ -47,6 +47,10 @@ func (c *copier) UploadFile(ctx context.Context,
                             filepath string,
                             blockSize int64) error {
 
+    ctx, cancel := context.WithCancel(ctx)
+    defer cancel()
+    go c.monitorContext(ctx, cancel)
+
 	// 1. Calculate the size of the destination file
 	file, err := os.Open(filepath)
 	if err != nil {
@@ -66,19 +70,15 @@ func (c *copier) UploadFile(ctx context.Context,
 		return err
 	}
 
-	return c.uploadInternal(ctx, b, file, fileSize, blockSize)
+	return c.uploadInternal(ctx, cancel, b, file, fileSize, blockSize)
 }
 
 func (c *copier) uploadInternal(ctx context.Context,
+                                cancel context.CancelFunc,
                                 b *blockblob.Client,
                                 file io.ReadSeekCloser,
                                 fileSize int64,
                                 blockSize int64) error {
-
-
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
 	// short hand for routines to report and error
 	errorChannel := make(chan error)
 	postError := func(err error) {
@@ -142,7 +142,7 @@ func (c *copier) uploadInternal(ctx context.Context,
 		}(buff, blockNum)
 
 		wg.Add(1)
-		c.opChan <- f
+		c.execute(f)
 	}
 
 	// Wait for all chunks to be done.

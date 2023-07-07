@@ -31,17 +31,16 @@ import (
 )
 
 const (
-	CountToEnd = 0
-
-	DefaultDownloadBlockSize = int64(4 * 1024 * 1024) // 4MB
-
-	MaxBlockBlobBlockSize = 4000 * 1024 * 1024
-
-	MaxRetryPerDownloadBody = 5
-
 	MiB = 1024 * 1024
 
 	GiB = 1024 * MiB
+
+	DefaultBlockSize = int64(8 * MiB)
+
+	MaxBlockBlobBlockSize = 4000 * MiB
+
+	MaxRetryPerDownloadBody = 5
+
 )
 
 func logThroughput(ctx context.Context, p core.PacerAdmin) {
@@ -79,7 +78,7 @@ func main() {
 
 	throughput := 16 * MiB
 	concurrency := 32
-	c := core.NewCopier(nil, int64(throughput), MaxBlockBlobBlockSize, 4 * GiB, concurrency )
+	c := core.NewCopier(int64(throughput), MaxBlockBlobBlockSize, 4 * GiB, concurrency)
 
 	b, err := blockblob.NewClientWithNoCredential(blobURL, &blockblob.ClientOptions{})
 	if err != nil {
@@ -89,10 +88,10 @@ func main() {
 
 	if action == "d" {
 		fmt.Println("Downloading")
-		_, err = c.DownloadFile(ctx, b, outputFile, 8*1024*1024)
+		_, err = c.DownloadFile(ctx, b, outputFile, DefaultBlockSize)
 	} else if action == "u" {
 		fmt.Println("Uploading")
-		err = c.UploadFile(ctx, b, outputFile, 8*1024*1024)
+		err = c.UploadFile(ctx, b, outputFile, DefaultBlockSize)
 	}
 
 	if err != nil {
